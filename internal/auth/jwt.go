@@ -45,9 +45,9 @@ func ParseToken(tokenStr string) (*Claims, error) {
 
 	token, err := jwt.ParseWithClaims(
 
-		tokenStr,
+		tokenStr,  //要解析的token字符串
 
-		&Claims{},
+		&Claims{},  //一个空的Claims对象，用于接收解析后的claims数据
 
 		//提供一个函数来返回用于验证token的密钥，这里直接返回jwtSecret
 		func(token *jwt.Token) (interface{}, error) {
