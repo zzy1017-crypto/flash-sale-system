@@ -81,7 +81,7 @@ func main() {
 
 	if err != nil {
 		panic(err)
-	} //初始化商品库存，设置初始库存数量为5，过期时间为0表示永不过期
+	}
 
 	//登录接口，生成JWT token
 	r.POST("/login", func(c *gin.Context) {
@@ -130,12 +130,15 @@ func main() {
 			return
 		}
 
-		userID := userIDVal.(string)  //从JWT中拿到用户ID，进行类型断言
-		productID := "1"              //假设只有一个商品，ID为1，实际应用中可以从请求参数中获取商品ID
-		stockKey := "stock:product:1" //库存键，格式为stock:product:{id}，这里假设只有一个商品，ID为1
+		userID := userIDVal.(string)                          //从JWT中拿到用户ID，进行类型断言
+		productID := "1"                                      //假设只有一个商品，ID为1，实际应用中可以从请求参数中获取商品ID
+		stockKey := "stock:product:1"                         //库存键，格式为stock:product:{id}，这里假设只有一个商品，ID为1
+		userkey := "user:" + userID + ":product:" + productID //用户购买记录键，格式为user:{user_id}:product:{product_id}
+		requestID := userID + ":" + productID                 //请求唯一标识，格式为{user_id}:{product_id}，用于防止重复请求
 
+		//检查用户是否已经购买过该商品，使用Redis的SETNX命令尝试设置一个键，如果键不存在则设置成功，返回1，否则返回0，表示用户已经购买过该商品
 		//扣减库存，调用stockService.DeductStock函数尝试扣减库存
-		result, err := stockService.DeductStock(stockKey)
+		result, err := stockService.DeductStock(stockKey, userkey, requestID) //扣减库存，传入库存键和请求唯一标识，返回扣减结果和错误信息
 		//如果扣减库存失败，记录错误日志并返回 500 Internal Server Error 错误响应
 		if err != nil {
 
@@ -143,6 +146,7 @@ func main() {
 				zap.Error(err),
 				zap.String("user_id", userID),
 				zap.String("product_id", productID),
+				zap.String("request_id", requestID),
 			)
 
 			c.JSON(500, gin.H{
@@ -174,7 +178,8 @@ func main() {
 		//如果发送消息失败，尝试回滚库存，记录日志，但不影响用户体验，继续返回订单创建失败的响应
 		if err != nil {
 
-			rollbackErr := stockService.RollbackStock(stockKey)
+			//尝试回滚库存，调用stockService.RollbackStock函数恢复库存数量，传入库存键、用户键和请求唯一标识作为参数
+			rollbackErr := stockService.RollbackStock(stockKey, userkey, requestID)
 
 			//如果回滚库存失败，记录错误日志，包含用户ID，帮助排查问题，但不影响用户体验，继续返回订单创建失败的响应
 			if rollbackErr != nil {

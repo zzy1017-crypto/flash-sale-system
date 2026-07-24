@@ -8,6 +8,7 @@ import (
 
 // OrderMessage 定义了秒杀成功后的订单消息的结构，包含用户ID和商品ID
 type OrderMessage struct {
+	RequestID string //全局唯一标识，格式为{user_id}:{product_id}，用于防止重复请求
 	UserID    string
 	ProductID string
 }

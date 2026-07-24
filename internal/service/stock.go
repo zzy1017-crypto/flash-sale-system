@@ -22,6 +22,10 @@ func NewStockService(rdb *cache.RedisClient) *StockService {
 
 // 定义一个 Lua 脚本，用于原子地扣减库存，确保在高并发环境下不会出现竞争条件
 var deductStockScript = redis.NewScript(`
+if redis.call("exists", KEYS[2]) == 1 then
+   return 2          --如果用户已经购买过该商品，返回 2 表示重复请求
+end
+
 local stock = tonumber(redis.call("get", KEYS[1]))     --获取当前库存数量，并转换为数字类型,local定义局部变量,tonumber将字符串转为数字
 if stock == nil then
    return -1
@@ -32,16 +36,18 @@ return  0
 end                                                 --如果库存不足，返回 0 表示扣减失败
 
 redis.call("decr", KEYS[1])            --库存足够，执行扣减操作，使用 Redis 的 DECR 命令将库存数量减 1,decr命令会自动将字符串类型的库存数量转换为数字类型,并进行原子操作,确保在高并发环境下不会出现竞争条件
+redis.call("set", KEYS[2], ARGV[1])
 return 1                                    --扣减成功，返回 1 表示成功  
 `)
 
-// DeductStock 使用 Lua 脚本原子地扣减库存，接受一个库存键作为参数，返回扣减结果和错误信息
-func (s *StockService) DeductStock(key string) (int64, error) {
+// DeductStock 使用 Lua 脚本原子地扣减库存，接受库存键、用户键和请求唯一标识作为参数，返回扣减结果和错误信息
+func (s *StockService) DeductStock(stockKey, userKey, requestID string) (int64, error) {
 	res, err := deductStockScript.Run(
-		context.Background(),   //Lua 脚本的执行需要一个上下文参数，这里使用 context.Background() 创建一个背景上下文，表示没有特定的取消或超时机制
-		s.client,  //Redis 客户端对象，用于执行 Lua 脚本，传递给 Run 方法以便在 Redis 服务器上执行脚本
-		[]string{key},  //Lua 脚本的键参数，这里传递一个包含库存键的字符串切片，Lua 脚本中通过 KEYS[1] 来访问这个键
-	).Result()  
+		context.Background(),        //Lua 脚本的执行需要一个上下文参数，这里使用 context.Background() 创建一个背景上下文，表示没有特定的取消或超时机制
+		s.client,                    //Redis 客户端对象，用于执行 Lua 脚本，传递给 Run 方法以便在 Redis 服务器上执行脚本
+		[]string{stockKey, userKey}, //Lua 脚本的键参数，这里传递一个包含库存键的字符串切片，Lua 脚本中通过 KEYS[1] 来访问这个键
+		requestID,                   //Lua 脚本的参数，这里传递请求唯一标识，Lua 脚本中通过 ARGV[1] 来访问这个参数
+	).Result()
 
 	if err != nil {
 		return 0, err
@@ -51,17 +57,45 @@ func (s *StockService) DeductStock(key string) (int64, error) {
 	result, ok := res.(int64)
 	if !ok {
 		return 0, fmt.Errorf("invalid result type: %T", res)
-	} 
+	}
 
 	return result, nil
 }
 
-// RollbackStock 回滚库存，接受一个库存键作为参数，返回错误信息
-func (s *StockService) RollbackStock(key string) error {
+// 定义一个 Lua 脚本，用于原子地回滚库存，确保在订单处理失败时能够恢复库存数量
+var rollbackStockScript = redis.NewScript(`
+local savedRequestID = redis.call("get", KEYS[2])    --获取用户购买记录键的值，表示之前扣减库存时保存的请求唯一标识
+if savedRequestID ~= ARGV[1] then
+   return 0      --如果请求唯一标识不匹配，说明回滚请求不合法，返回 0 表示回滚失败
+end
 
-	//回滚库存，使用 Redis 的 INCR 命令将库存数量加 1，确保在订单处理失败时能够恢复库存数量
-	return s.client.Incr(
-		context.Background(),  
-		key,
-	).Err()
+redis.call("incr", KEYS[1])
+redis.call("del", KEYS[2])
+return 1   --回滚成功，返回 1 表示回滚成功
+`)
+
+// RollbackStock 回滚库存，接受一个库存键作为参数，返回错误信息
+func (s *StockService) RollbackStock(stockKey, userKey, requestID string) error {
+
+	//回滚库存，使用 Lua 脚本原子地执行回滚操作，确保在高并发环境下不会出现竞争条件，传入库存键、用户键和请求唯一标识作为参数
+	res, err := rollbackStockScript.Run(
+		context.Background(),        //Lua 脚本的执行需要一个上下文参数，这里使用 context.Background() 创建一个背景上下文，表示没有特定的取消或超时机制
+		s.client,                    //Redis 客户端对象，用于执行 Lua 脚本，传递给 Run 方法以便在 Redis 服务器上执行脚本
+		[]string{stockKey, userKey}, //Lua 脚本的键参数，这里传递一个包含库存键和用户键的字符串切片，Lua 脚本中通过 KEYS[1] 和 KEYS[2] 来访问这些键
+		requestID,                   //Lua 脚本的参数，这里传递请求唯一标识，Lua 脚本中通过 ARGV[1] 来访问这个参数
+	).Result()
+	if err != nil {
+		return err
+	}
+
+	//将 Lua 脚本的执行结果转换为 int64 类型，表示回滚结果，如果转换失败则返回错误
+	result, ok := res.(int64)
+	if !ok {
+		return fmt.Errorf("invalid rollback result type: %T", res)
+	}
+	if result != 1 {
+		return fmt.Errorf("rollback request does not match")
+	}
+
+	return nil
 }
