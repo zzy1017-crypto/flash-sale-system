@@ -26,8 +26,9 @@ func (mq *RabbitMQ) Publish(msg OrderMessage) error {
 		false,
 		false,
 		amqp.Publishing{
-			ContentType: "application/json", //消息内容类型，指定为 JSON
-			Body:        body,               //消息体，包含订单信息的 JSON 数据
+			ContentType:  "application/json", //消息内容类型，指定为 JSON
+			DeliveryMode: amqp.Persistent,    //消息持久化，确保消息在 RabbitMQ 重启后仍然存在
+			Body:         body,               //消息体，包含订单信息的 JSON 数据
 		},
 	)
 }

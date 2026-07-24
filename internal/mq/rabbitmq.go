@@ -16,13 +16,26 @@ func NewRabbitMQ(url string) (*RabbitMQ, error) {
 	conn, err := amqp.Dial(url)
 	if err != nil {
 		return nil, err
-	} 
+	}
 
 	//在连接上创建一个通道，返回一个通道对象，如果创建通道失败则返回错误
 	ch, err := conn.Channel()
 	if err != nil {
 		return nil, err
-	} 
+	}
+
+	//声明一个死信队列，确保队列存在，如果声明失败则返回错误
+	_, err = ch.QueueDeclare(
+		"order_dead_queue",
+		true,
+		false,
+		false,
+		false,
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
 
 	//声明一个队列，确保队列存在，如果声明失败则返回错误
 	_, err = ch.QueueDeclare(
@@ -31,7 +44,10 @@ func NewRabbitMQ(url string) (*RabbitMQ, error) {
 		false,         //自动删除，当没有消费者时删除队列
 		false,         //独占，限制队列只能被当前连接使用
 		false,         //no-wait，异步声明队列，不等待服务器响应
-		nil,           //其他参数
+		amqp.Table{
+			"x-dead-letter-exchange":    "",                 //死信交换机，空字符串表示使用默认交换机
+			"x-dead-letter-routing-key": "order_dead_queue", //死信路由键，指定消息发送到死信队列
+		}, //其他参数
 	)
 
 	if err != nil {
