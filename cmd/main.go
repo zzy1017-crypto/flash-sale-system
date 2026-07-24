@@ -13,6 +13,7 @@ import (
 	"flash-sale-system/internal/service"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -69,7 +70,13 @@ func main() {
 
 	r := gin.Default() //创建Gin引擎对象，使用默认的中间件（日志和恢复），用于处理HTTP请求和路由
 
-	r.Use(middleware.RateLimitMiddleware(rdb, 10)) //全局使用限流中间件，限制每个IP每秒最多只能发起10次请求，防止恶意攻击和过载
+	//设置Gin引擎的可信代理列表，允许所有代理，防止客户端伪造IP地址，确保限流中间件能够正确获取客户端IP地址
+	err = r.SetTrustedProxies(nil)
+	if err != nil {
+		panic(err)
+	}
+
+	r.Use(middleware.IPRateLimitMiddleware(rdb, 50, time.Second)) //全局限流中间件，限制每个IP每秒最多只能发起50次请求，防止恶意请求和DDoS攻击
 
 	//初始化商品库存，设置初始库存数量为1000，过期时间为0表示永不过期，SETNX命令确保只有在键不存在时才设置值，避免重复初始化导致库存数量错误
 	err = rdb.Client.SetNX(
@@ -115,8 +122,9 @@ func main() {
 		})
 	})
 
-	authGroup := r.Group("/")            //创建一个受保护的路由组，所有在这个组中的路由都需要经过JWT认证中间件的验证才能访问
-	authGroup.Use(auth.AuthMiddleware()) //受保护的路由组，使用JWT认证中间件，只有携带有效JWT token的请求才能访问这些路由
+	authGroup := r.Group("/")                                              //创建一个受保护的路由组，所有在这个组中的路由都需要经过JWT认证中间件的验证才能访问
+	authGroup.Use(auth.AuthMiddleware())                                   //受保护的路由组，使用JWT认证中间件，只有携带有效JWT token的请求才能访问这些路由
+	authGroup.Use(middleware.UserRateLimitMiddleware(rdb, 3, time.Second)) //受保护的路由组，使用用户限流中间件，限制每个用户每秒最多只能发起3次请求
 
 	//秒杀接口，用户可以访问这个接口尝试秒杀商品，接口会验证JWT token，扣减库存，并发送消息到RabbitMQ异步创建订单
 	authGroup.GET("/seckill", func(c *gin.Context) {
