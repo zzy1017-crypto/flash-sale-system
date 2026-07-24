@@ -3,13 +3,13 @@ package model
 import "time"
 
 type Order struct {
-	ID uint `gorm:"primaryKey"`  //订单ID，主键，自增
+	ID uint `gorm:"primaryKey"` //订单ID，主键，自增
 
-	OrderID string `gorm:"type:varchar(64);uniqueIndex;not null"` //订单编号，唯一索引，不能为空
+	OrderID string `gorm:"type:varchar(64);uniqueIndex:idx_orders_order_id;not null"` //订单编号，唯一索引，不能为空
 
-	UserID string `gorm:"type:varchar(64);not null;uniqueIndex:idx_user_product"` //添加唯一索引，确保同一用户对同一商品只能有一个订单
+	UserID string `gorm:"type:varchar(64);not null;uniqueIndex:idx_user_product"` //添加联合唯一索引，确保同一用户对同一商品只能有一个订单
 
-	ProductID string `gorm:"type:varchar(64);not null;uniqueIndex:idx_user_product"`//添加唯一索引，确保同一用户对同一商品只能有一个订单
+	ProductID string `gorm:"type:varchar(64);not null;uniqueIndex:idx_user_product"` //添加联合唯一索引，确保同一用户对同一商品只能有一个订单
 
 	Status string `gorm:"type:varchar(32);not null;default:created"` //订单状态，默认为created，表示订单已创建，后续可以更新为paid、shipped、completed等状态
 
