@@ -45,7 +45,7 @@ func (s *OrderService) CreateOrder(userID, productID string) (*model.Order, erro
 		}
 
 		//创建订单对象，包含订单ID、用户ID、商品ID、订单状态和创建时间等信息，订单ID使用当前时间戳生成，确保唯一性
-		order := &model.Order{
+		order = &model.Order{
 			OrderID:   fmt.Sprintf("order_%d", time.Now().UnixNano()),
 			UserID:    userID,
 			ProductID: productID,
