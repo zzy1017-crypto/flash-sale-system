@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flash-sale-system/internal/logger"
 	"flash-sale-system/internal/service"
+	"fmt"
 	"net"
 
 	mysqlDriver "github.com/go-sql-driver/mysql"
@@ -47,7 +48,7 @@ func (mq *RabbitMQ) StartConsumer(
 		//从消息通道 msgs 中不断接收消息，处理每条订单消息
 		for msg := range msgs {
 
-			var orderMsg OrderMessage //定义一个订单消息对象，用于保存从消息中解析出的订单信息，包含用户ID和商品ID等字段
+			var orderMsg OrderMessage //定义一个订单消息对象，用于保存从消息中解析出的订单信息，包含用户ID和商品ID和请求唯一标识等字段
 
 			//将消息体中的 JSON 数据反序列化到订单消息对象中
 			err := json.Unmarshal(
@@ -81,7 +82,23 @@ func (mq *RabbitMQ) StartConsumer(
 
 			//如果发生临时性订单错误（如超时、数据库连接失败等），则将消息重新入队，稍后重试
 			if isTransientOrderError(err) {
-				nackMessage(msg, err)
+				//获取当前重试次数
+				retryCount := getRetryCount(msg.Headers)
+				//如果重试次数超过3次，则认为消息处理失败，放入死信队列，继续处理下一条消息
+				if retryCount >= 3 {
+					rejectMessage(msg, err)
+					continue
+				}
+
+				//将消息重新入队到对应的重试队列中，重试次数加1
+				retryErr := mq.publishRetryMessage(msg, retryCount+1)
+				if retryErr != nil {
+					nackMessage(msg, retryErr)
+					continue
+				}
+
+				//手动ack确认当前消息，表示消息已被成功处理，继续处理下一条消息
+				ackMessage(msg)
 				continue
 			}
 
@@ -115,6 +132,78 @@ func nackMessage(msg amqp.Delivery, processErr error) {
 			zap.NamedError("process_error", processErr),
 			zap.Uint64("delivery_tag", msg.DeliveryTag),
 		)
+	}
+}
+
+// 获取当前消息的重试次数，从消息头中获取 "retry_count" 字段，如果不存在则返回0
+func getRetryCount(headers amqp.Table) int32 {
+	value, exists := headers["retry_count"]
+	if !exists {
+		return 0
+	}
+
+	//根据不同类型的值进行类型断言，将其转换为 int32 类型返回，如果类型不匹配则返回0
+	switch count := value.(type) {
+	case int8:
+		return int32(count)
+	case int16:
+		return int32(count)
+	case int32:
+		return count
+	case int64:
+		return int32(count)
+	case int:
+		return int32(count)
+	default:
+		return 0
+	}
+}
+
+// 发送重试消息
+func (mq *RabbitMQ) publishRetryMessage(msg amqp.Delivery, retryCount int32) error {
+	//根据重试次数获取对应的重试队列名称，如果重试次数无效则返回错误
+	retryQueue, err := retryQueueName(retryCount)
+	if err != nil {
+		return err
+	}
+
+	//创建一个新的消息头，包含原始消息头和更新后的重试次数
+	headers := make(amqp.Table, len(msg.Headers)+1)
+	for key, value := range msg.Headers {
+		headers[key] = value
+	}
+	headers["retry_count"] = retryCount
+
+	//将原始消息重新发布到对应的重试队列中，使用原始消息的内容和属性，确保消息的完整性和一致性
+	return mq.Channel.Publish(
+		"",
+		retryQueue,
+		false,
+		false,
+		amqp.Publishing{
+			Headers:       headers,
+			ContentType:   msg.ContentType,
+			DeliveryMode:  amqp.Persistent,
+			CorrelationId: msg.CorrelationId,
+			MessageId:     msg.MessageId,
+			Timestamp:     msg.Timestamp,
+			Type:          msg.Type,
+			Body:          msg.Body,
+		},
+	)
+}
+
+// 根据重试次数返回对应的重试队列名称，如果重试次数无效则返回错误
+func retryQueueName(retryCount int32) (string, error) {
+	switch retryCount {
+	case 1:
+		return orderRetry1sQueue, nil
+	case 2:
+		return orderRetry2sQueue, nil
+	case 3:
+		return orderRetry4sQueue, nil
+	default:
+		return "", fmt.Errorf("invalid retry count: %d", retryCount)
 	}
 }
 

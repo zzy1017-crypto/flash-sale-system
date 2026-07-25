@@ -4,6 +4,13 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+// 1、2、4秒重试队列的名称和死信队列的名称
+const (
+	orderRetry1sQueue = "order_retry_1s_queue"
+	orderRetry2sQueue = "order_retry_2s_queue"
+	orderRetry4sQueue = "order_retry_4s_queue"
+)
+
 type RabbitMQ struct {
 	Conn    *amqp.Connection //与RabbitMQ服务器的TCP连接
 	Channel *amqp.Channel    //在连接上创建的通道，用于发送和接收消息
@@ -35,6 +42,34 @@ func NewRabbitMQ(url string) (*RabbitMQ, error) {
 	)
 	if err != nil {
 		return nil, err
+	}
+
+	//声明三个重试队列，设置消息的TTL（过期时间）和死信交换机，确保每个重试队列存在，如果声明失败则返回错误
+	retryQueues := []struct {
+		name string
+		ttl  int32
+	}{
+		{name: orderRetry1sQueue, ttl: 1000},
+		{name: orderRetry2sQueue, ttl: 2000},
+		{name: orderRetry4sQueue, ttl: 4000},
+	}
+
+	for _, retryQueue := range retryQueues {
+		_, err = ch.QueueDeclare(
+			retryQueue.name,
+			true,
+			false,
+			false,
+			false,
+			amqp.Table{
+				"x-message-ttl":             retryQueue.ttl,
+				"x-dead-letter-exchange":    "",
+				"x-dead-letter-routing-key": "order_queue",
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	//声明一个队列，确保队列存在，如果声明失败则返回错误
