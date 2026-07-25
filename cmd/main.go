@@ -163,6 +163,18 @@ func main() {
 			return
 		}
 
+		//如果扣减库存的结果为-1，说明库存数据不存在，返回系统错误
+		if result == -1 {
+			c.JSON(500, gin.H{"error": "stock not initialized"})
+			return
+		}
+
+		//如果扣减库存的结果为2，说明用户已经参与过该商品秒杀，拒绝重复请求
+		if result == 2 {
+			c.JSON(409, gin.H{"msg": "duplicate seckill request"})
+			return
+		}
+
 		//如果扣减库存的结果为0，说明库存已经售罄，记录警告日志并返回 200 OK 状态码和 JSON 格式的响应体，包含一个 msg 字段，值为 "sold out"
 		if result == 0 {
 
@@ -178,6 +190,7 @@ func main() {
 		//扣减库存成功，发送消息到RabbitMQ，异步创建订单
 		err = rabbitMQ.Publish(
 			mq.OrderMessage{
+				RequestID: requestID,
 				UserID:    userID,
 				ProductID: productID,
 			},
